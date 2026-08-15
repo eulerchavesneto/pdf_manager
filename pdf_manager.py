@@ -16,9 +16,10 @@ def check_and_install_dependencies():
     """
     required_packages = {
         'PyPDF2': 'PyPDF2',
-        'Pillow': 'Pillow',
+        'PIL': 'Pillow',  # o módulo importável do Pillow é PIL
         'fitz': 'PyMuPDF',  # fitz é importado de PyMuPDF
         'docx': 'python-docx',
+        'reportlab': 'reportlab',
     }
     
     missing_packages = []
@@ -69,6 +70,19 @@ if check_and_install_dependencies():
     import PIL.Image
     import fitz  # PyMuPDF
     import docx
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter, A4
+    from reportlab.lib.units import inch
+    from reportlab.lib.utils import simpleSplit
+
+# Fontes padrão do reportlab e a variante em negrito de cada uma (usada no título
+# de cada arquivo ao combinar vários TXT num só PDF). Times-Roman foge do padrão
+# "<nome>-Bold", por isso o mapa é explícito.
+TXT_PDF_FONTS = {
+    "Helvetica": "Helvetica-Bold",
+    "Times-Roman": "Times-Bold",
+    "Courier": "Courier-Bold",
+}
 
 def sanitize_filename(name):
     """Remove caracteres inválidos de um nome de arquivo e substitui quebras de linha."""
@@ -138,6 +152,14 @@ class PDFManagerApp:
         self.convert_format = tk.StringVar(value="jpg")
         self.convert_dpi = tk.IntVar(value=300)
         
+        self.txt_files_to_convert = []
+        self.txt_output_folder = tk.StringVar(value=str(self.USER_HOME_DIR))
+        self.txt_output_file = tk.StringVar(value=str(self.USER_HOME_DIR / "TXT_Combinado.pdf"))
+        self.txt_combine_var = tk.BooleanVar(value=False)
+        self.txt_font_name = tk.StringVar(value="Helvetica")
+        self.txt_font_size = tk.IntVar(value=12)
+        self.txt_page_size = tk.StringVar(value="letter")
+
         self.insert_target_pdf = tk.StringVar()
         self.insert_source_pdf = tk.StringVar()
         self.insert_position = tk.IntVar(value=1)
@@ -171,6 +193,7 @@ class PDFManagerApp:
             "Dividir PDF": self.setup_split_tab,
             "Reorganizar PDF": self.setup_reorder_tab,
             "Converter PDF": self.setup_convert_tab,
+            "TXT para PDF": self.setup_txt_to_pdf_tab,
             "Inserir Páginas": self.setup_insert_tab,
         }
 
@@ -287,6 +310,56 @@ class PDFManagerApp:
         self._create_folder_output_frame(parent, "Pasta de Saída", self.convert_output_folder, self.select_convert_output_folder)
         convert_button = ttk.Button(parent, text="Converter PDF", command=self.convert_pdf, style="Accent.TButton")
         convert_button.pack(pady=10)
+
+    def setup_txt_to_pdf_tab(self, parent):
+        title_label = ttk.Label(parent, text="TXT para PDF", font=("Arial", 16, "bold"))
+        title_label.pack(pady=10)
+        files_frame = ttk.LabelFrame(parent, text="Arquivos TXT")
+        files_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        add_button = ttk.Button(files_frame, text="Adicionar TXTs", command=self.add_txt_files)
+        add_button.pack(side=tk.TOP, anchor=tk.W, pady=5, padx=5)
+        self.txt_listbox = self._create_listbox_with_controls(
+            files_frame,
+            up_command=lambda: self._move_listbox_item(self.txt_listbox, self.txt_files_to_convert, -1),
+            down_command=lambda: self._move_listbox_item(self.txt_listbox, self.txt_files_to_convert, 1),
+            remove_command=self.remove_txt_file,
+            clear_command=self.clear_txt_files
+        )
+
+        options_frame = ttk.LabelFrame(parent, text="Opções de Formatação")
+        options_frame.pack(fill=tk.X, pady=5)
+        font_frame = ttk.Frame(options_frame)
+        font_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(font_frame, text="Fonte:").pack(side=tk.LEFT, padx=(0, 10))
+        for font in TXT_PDF_FONTS:
+            ttk.Radiobutton(font_frame, text=font, variable=self.txt_font_name, value=font).pack(side=tk.LEFT, padx=5)
+        ttk.Label(font_frame, text="Tamanho:").pack(side=tk.LEFT, padx=(20, 5))
+        ttk.Spinbox(font_frame, from_=6, to=72, textvariable=self.txt_font_size, width=5).pack(side=tk.LEFT)
+        page_frame = ttk.Frame(options_frame)
+        page_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(page_frame, text="Tamanho da página:").pack(side=tk.LEFT, padx=(0, 10))
+        for size in ["letter", "A4"]:
+            ttk.Radiobutton(page_frame, text=size.upper(), variable=self.txt_page_size, value=size).pack(side=tk.LEFT, padx=5)
+
+        mode_frame = ttk.LabelFrame(parent, text="Modo de Saída")
+        mode_frame.pack(fill=tk.X, pady=5)
+        ttk.Radiobutton(mode_frame, text="Um PDF para cada TXT", variable=self.txt_combine_var,
+                        value=False, command=self.toggle_txt_output_mode).pack(anchor=tk.W)
+        ttk.Radiobutton(mode_frame, text="Combinar todos num único PDF", variable=self.txt_combine_var,
+                        value=True, command=self.toggle_txt_output_mode).pack(anchor=tk.W)
+
+        # As duas saídas possíveis vivem num container próprio para que alternar
+        # entre elas não as jogue para baixo do botão de conversão.
+        self.txt_output_container = ttk.Frame(parent)
+        self.txt_output_container.pack(fill=tk.X)
+        self.txt_output_folder_frame = self._create_folder_output_frame(
+            self.txt_output_container, "Pasta de Saída", self.txt_output_folder, self.select_txt_output_folder)
+        self.txt_output_file_frame = self._create_output_frame(
+            self.txt_output_container, "Arquivo PDF Combinado", self.txt_output_file, self.select_txt_output_file)
+
+        convert_button = ttk.Button(parent, text="Converter para PDF", command=self.txt_to_pdf, style="Accent.TButton")
+        convert_button.pack(pady=10)
+        self.toggle_txt_output_mode()
 
     def setup_insert_tab(self, parent):
         title_label = ttk.Label(parent, text="Inserir Páginas", font=("Arial", 16, "bold"))
@@ -435,6 +508,44 @@ class PDFManagerApp:
         folder = filedialog.askdirectory(title="Selecionar pasta para salvar arquivos convertidos")
         if folder:
             self.convert_output_folder.set(folder)
+
+    def add_txt_files(self):
+        files = filedialog.askopenfilenames(title="Selecionar arquivos TXT", filetypes=[("Arquivos de Texto", "*.txt")])
+        if files:
+            for file in files:
+                if file not in self.txt_files_to_convert:
+                    self.txt_files_to_convert.append(file)
+                    self.txt_listbox.insert(tk.END, Path(file).name)
+            self.status_var.set(f"{len(self.txt_files_to_convert)} arquivos TXT selecionados.")
+
+    def remove_txt_file(self):
+        selected_indices = self.txt_listbox.curselection()
+        if not selected_indices: return
+        idx = selected_indices[0]
+        self.txt_listbox.delete(idx)
+        self.txt_files_to_convert.pop(idx)
+        self.status_var.set(f"{len(self.txt_files_to_convert)} arquivos restantes.")
+
+    def clear_txt_files(self):
+        self.txt_listbox.delete(0, tk.END)
+        self.txt_files_to_convert.clear()
+        self.status_var.set("Lista de arquivos TXT limpa.")
+
+    def select_txt_output_folder(self):
+        folder = filedialog.askdirectory(title="Selecionar pasta para salvar os PDFs")
+        if folder:
+            self.txt_output_folder.set(folder)
+
+    def select_txt_output_file(self):
+        self._select_save_file("Salvar PDF Combinado Como", [("Arquivos PDF", "*.pdf")], "TXT_Combinado.pdf", self.txt_output_file)
+
+    def toggle_txt_output_mode(self):
+        if self.txt_combine_var.get():
+            self.txt_output_folder_frame.pack_forget()
+            self.txt_output_file_frame.pack(fill=tk.X, pady=5)
+        else:
+            self.txt_output_file_frame.pack_forget()
+            self.txt_output_folder_frame.pack(fill=tk.X, pady=5)
 
     # --- Lógica de Manipulação de Listas e Treeview ---
 
@@ -653,6 +764,84 @@ class PDFManagerApp:
                 self._handle_success(f"PDF convertido para HTML em: {output_path}")
         except Exception as e:
             self._handle_error("Erro durante a conversão", e)
+
+    def txt_to_pdf(self):
+        if not self._validate_inputs(self.txt_files_to_convert): return
+        combine = self.txt_combine_var.get()
+        if not self._validate_inputs(self.txt_output_file if combine else self.txt_output_folder): return
+
+        page_size = A4 if self.txt_page_size.get() == "A4" else letter
+        font_name = self.txt_font_name.get()
+        font_size = self.txt_font_size.get()
+        total = len(self.txt_files_to_convert)
+        try:
+            if combine:
+                output_path = self.txt_output_file.get()
+                c = canvas.Canvas(output_path, pagesize=page_size)
+                for i, txt_path in enumerate(self.txt_files_to_convert):
+                    self._update_progress(f"Processando {Path(txt_path).name}", i, total)
+                    if i > 0:
+                        c.showPage()  # cada arquivo começa numa página nova
+                    self._draw_text_lines(c, self._read_text_lines(txt_path), page_size, font_name,
+                                          font_size, header=f"Arquivo: {Path(txt_path).name}")
+                c.save()
+                self._handle_success(f"{total} arquivo(s) TXT combinado(s) em: {output_path}")
+            else:
+                output_folder = Path(self.txt_output_folder.get())
+                for i, txt_path in enumerate(self.txt_files_to_convert):
+                    self._update_progress(f"Convertendo {Path(txt_path).name}", i, total)
+                    output_path = output_folder / f"{Path(txt_path).stem}.pdf"
+                    c = canvas.Canvas(str(output_path), pagesize=page_size)
+                    self._draw_text_lines(c, self._read_text_lines(txt_path), page_size, font_name, font_size)
+                    c.save()
+                self._handle_success(f"{total} PDF(s) criado(s) em: {output_folder}")
+        except Exception as e:
+            self._handle_error("Erro ao converter TXT para PDF", e)
+
+    def _read_text_lines(self, txt_path):
+        """Lê um arquivo de texto em UTF-8, caindo para latin-1 quando a decodificação falha."""
+        try:
+            with open(txt_path, "r", encoding="utf-8") as f:
+                return f.read().splitlines()
+        except UnicodeDecodeError:
+            with open(txt_path, "r", encoding="latin-1") as f:
+                return f.read().splitlines()
+
+    def _draw_text_lines(self, c, lines, page_size, font_name, font_size, header=None):
+        """Escreve as linhas no canvas a partir da página atual, quebrando linhas largas
+        demais e abrindo páginas novas conforme o espaço acaba.
+
+        Não chama showPage() ao final — quem chama decide se ainda há conteúdo a seguir.
+        """
+        width, height = page_size
+        margin = inch
+        usable_width = width - 2 * margin
+
+        # (texto, fonte, corpo) já quebrado na largura útil da página.
+        entries = []
+        if header:
+            entries.append((header, TXT_PDF_FONTS.get(font_name, font_name), font_size + 2))
+            entries.append(("", font_name, font_size))
+        for line in lines:
+            # simpleSplit devolve lista vazia para linha vazia; preservamos como linha em branco.
+            for piece in simpleSplit(line, font_name, font_size, usable_width) or [""]:
+                entries.append((piece, font_name, font_size))
+
+        y = height - margin
+        text_object = c.beginText()
+        text_object.setTextOrigin(margin, y)
+        for text, current_font, current_size in entries:
+            step = current_size * 1.2  # mesmo entrelinhamento que o reportlab usa por padrão
+            if y - step < margin:
+                c.drawText(text_object)
+                c.showPage()
+                y = height - margin
+                text_object = c.beginText()
+                text_object.setTextOrigin(margin, y)
+            text_object.setFont(current_font, current_size)
+            text_object.textLine(text)
+            y -= step
+        c.drawText(text_object)
 
     def insert_pages(self):
         if not self._validate_inputs(self.insert_target_pdf, self.insert_output_file): return
